@@ -7,6 +7,12 @@ vignette, and flicker.
 
 The filter appears in OBS as **CRT TV** under a source's **Effect Filters**.
 
+## Preview
+
+| Before | After |
+| --- | --- |
+| ![Before applying OBS CRT Filter](assets/before.png) | ![After applying OBS CRT Filter](assets/after.png) |
+
 ## Features
 
 - Three look modes: **Consumer TV**, **Arcade Monitor**, and **Clean PVM**.
