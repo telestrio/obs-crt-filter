@@ -1,0 +1,30 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset windows-ci-x64
+
+      - name: Build
+        run: cmake --build --preset windows-ci-x64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obs-crt-filter-windows-x64
+          path: |
+            build_vs2022_x64/Release/obs-crt-filter.dll
+            build_vs2022_x64/Release/obs-crt-filter.pdb
+            data/effects/crt.effect
+            data/locale/en-US.ini

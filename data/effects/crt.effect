@@ -1,0 +1,167 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform int look;
+uniform float intensity;
+uniform float scanlines;
+uniform float scanline_amount;
+uniform float curvature;
+uniform float curvature_amount;
+uniform float glow;
+uniform float glow_amount;
+uniform float color_bleed;
+uniform float color_bleed_amount;
+uniform float vignette;
+uniform float vignette_amount;
+uniform float flicker;
+uniform float flicker_amount;
+uniform float texture_width;
+uniform float texture_height;
+uniform float elapsed_time;
+
+sampler_state linear_sampler {
+	Filter = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertInOut {
+	float4 pos : POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+struct VertOut {
+	float4 pos : POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+VertOut VSDefault(VertInOut vert_in)
+{
+	VertOut vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv = vert_in.uv;
+	return vert_out;
+}
+
+float2 apply_curve(float2 uv, float amount)
+{
+	float2 centered = uv * 2.0 - 1.0;
+	float2 offset = centered.yx * centered.yx;
+	centered += centered * offset * amount;
+	return centered * 0.5 + 0.5;
+}
+
+float screen_mask(float2 uv)
+{
+	float2 centered = abs(uv * 2.0 - 1.0);
+	float edge = max(centered.x, centered.y);
+	return 1.0 - smoothstep(0.985, 1.0, edge);
+}
+
+float scanline_mask(float row, float strength)
+{
+	float triad = frac(row / 3.0);
+	float dark_band = smoothstep(0.44, 0.0, abs(triad - 0.5));
+	return 1.0 - dark_band * strength;
+}
+
+float3 phosphor_mask(float2 uv, float strength)
+{
+	float col = frac(uv.x * texture_width / 3.0);
+	float3 mask = (col < 0.3333) ? float3(1.0, 0.90, 0.88)
+				      : ((col < 0.6666) ? float3(0.90, 1.0, 0.88) : float3(0.90, 0.92, 1.0));
+	return lerp(float3(1.0, 1.0, 1.0), mask, strength);
+}
+
+float4 sample_source(float2 uv)
+{
+	return image.Sample(linear_sampler, uv);
+}
+
+float punchy_amount(float value)
+{
+	float x = saturate(value);
+	return x * (1.35 - 0.35 * x);
+}
+
+float look_scale(float consumer, float arcade, float pvm)
+{
+	float is_arcade = (look == 1) ? 1.0 : 0.0;
+	float is_pvm = (look == 2) ? 1.0 : 0.0;
+	float is_consumer = 1.0 - max(is_arcade, is_pvm);
+	return consumer * is_consumer + arcade * is_arcade + pvm * is_pvm;
+}
+
+float4 PSCRT(VertOut vert_in) : TARGET
+{
+	float t = saturate(intensity);
+	float2 uv = vert_in.uv;
+
+	float curve_control = curvature * punchy_amount(curvature_amount) * look_scale(1.20, 0.85, 0.45);
+	float glow_control = glow * punchy_amount(glow_amount) * look_scale(1.20, 0.75, 0.45);
+	float bleed_control = color_bleed * punchy_amount(color_bleed_amount) * look_scale(1.15, 0.85, 0.35);
+	float scan_control = scanlines * punchy_amount(scanline_amount) * look_scale(0.90, 1.35, 0.65);
+	float vignette_control = vignette * punchy_amount(vignette_amount) * look_scale(1.20, 0.75, 0.45);
+	float flicker_control = flicker * punchy_amount(flicker_amount) * look_scale(1.10, 0.75, 0.35);
+
+	float curve_strength = 0.16 * t * curve_control;
+	float2 crt_uv = apply_curve(uv, curve_strength);
+
+	if (crt_uv.x < 0.0 || crt_uv.x > 1.0 || crt_uv.y < 0.0 || crt_uv.y > 1.0)
+		return float4(0.0, 0.0, 0.0, 1.0);
+
+	float2 pixel = 1.0 / float2(max(texture_width, 1.0), max(texture_height, 1.0));
+	float bleed_amount = 7.0 * t * bleed_control;
+	float2 bleed = float2(pixel.x * bleed_amount, 0.0);
+
+	float4 center = sample_source(crt_uv);
+	float4 source = center;
+
+	float red = sample_source(crt_uv + bleed).r;
+	float blue = sample_source(crt_uv - bleed).b;
+	float green = center.g;
+	source.rgb = lerp(center.rgb, float3(red, green, blue), 0.95 * bleed_control);
+
+	float2 glow_step = pixel * (3.0 + 5.0 * glow_control);
+	float3 soft = source.rgb;
+	soft += sample_source(crt_uv + float2(glow_step.x, 0.0)).rgb;
+	soft += sample_source(crt_uv - float2(glow_step.x, 0.0)).rgb;
+	soft += sample_source(crt_uv + float2(0.0, glow_step.y)).rgb;
+	soft += sample_source(crt_uv - float2(0.0, glow_step.y)).rgb;
+	soft += sample_source(crt_uv + glow_step).rgb;
+	soft += sample_source(crt_uv - glow_step).rgb;
+	soft *= 0.142857;
+
+	float bloom_gate = saturate((dot(source.rgb, float3(0.2126, 0.7152, 0.0722)) - 0.24) * 1.8);
+	float bloom_strength = 0.75 * t * glow_control;
+	source.rgb = lerp(source.rgb, source.rgb + soft * bloom_gate * 1.35, bloom_strength);
+
+	float scan_strength = 0.82 * t * scan_control;
+	source.rgb *= scanline_mask(crt_uv.y * texture_height, scan_strength);
+
+	float mask_strength = 0.42 * t * scan_control;
+	source.rgb *= phosphor_mask(crt_uv, mask_strength);
+
+	float2 centered = uv * 2.0 - 1.0;
+	float edge = dot(centered, centered);
+	float vig = lerp(1.0, smoothstep(1.18, 0.04, edge), 0.90 * t);
+	source.rgb *= lerp(1.0, vig, vignette_control);
+	source.rgb *= screen_mask(crt_uv);
+
+	float roll = 0.965 + 0.035 * sin(elapsed_time * 34.0 + uv.y * 30.0);
+	float jitter = 1.0 + 0.018 * sin(elapsed_time * 91.0);
+	source.rgb *= lerp(1.0, roll * jitter, flicker_control * t);
+
+	source.rgb = saturate(source.rgb);
+	source.a = center.a;
+	return source;
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader = PSCRT(vert_in);
+	}
+}
